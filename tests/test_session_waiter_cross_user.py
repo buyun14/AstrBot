@@ -1,16 +1,14 @@
 """Session-key isolation tests for the empty-mention waiter (issue #9377).
 
-The fix is scoped: DefaultSessionFilter keeps its group-level
-unified_msg_origin semantics (third-party plugins rely on it), and only the
-built-in empty-mention waiter opts into the new SenderSessionFilter.
-
-This file therefore locks down two things:
-1. The default behavior is unchanged — DefaultSessionFilter still returns
-   unified_msg_origin (including a regression guard that mirrors a real
-   plugin's manual-registration pattern);
-2. The new behavior is correct — SenderSessionFilter only responds to the
-   original sender, without leaking across conversations and without
-   constructible key collisions.
+The shipped combination of PR #9442 and PR #9378 scopes waiters by sender:
+1. DefaultSessionFilter now derives ``"{umo}:{sender_id}"`` (PR #9442), with an
+   ``<unknown>`` placeholder when the sender id is empty so keys cannot collide;
+2. SenderSessionFilter (PR #9378) only responds to the original sender,
+   without leaking across conversations and without constructible key
+   collisions;
+3. Plugins that manually register a SessionWaiter must pass a session_id
+   matching ``filter.filter(event)`` — a raw unified_msg_origin registration
+   key no longer matches the sender-scoped lookup key.
 
 The module under test is loaded from its file path with its two imports
 stubbed, so validating pure key logic does not require the full astrbot
@@ -20,6 +18,7 @@ separately in tests/unit/test_empty_mention_sender_scope.py.
 
 import asyncio
 import importlib.util
+import logging
 import pathlib
 import sys
 import types
@@ -59,6 +58,8 @@ def _load_session_waiter():
     stubs = {k: types.ModuleType(k) for k in names}
     stubs["astrbot.core.message.components"].BaseMessageComponent = BaseMessageComponent
     stubs["astrbot.core.platform"].AstrMessageEvent = AstrMessageEvent
+    # session_waiter imports the shared logger from astrbot.core.
+    stubs["astrbot.core"].logger = logging.getLogger("session_waiter_under_test")
     # `import a.b.c as x` requires child modules as parent attributes.
     stubs["astrbot"].core = stubs["astrbot.core"]
     stubs["astrbot.core"].message = stubs["astrbot.core.message"]
@@ -152,33 +153,38 @@ async def _run_with_sender_filter(mod, incoming):
     return captured
 
 
-# --- Default semantics unchanged (third-party plugin compatibility) ---
+# --- Default semantics: sender-scoped keys (PR #9442) ---
 
 
-def test_default_filter_returns_umo_unchanged():
-    """DefaultSessionFilter must keep returning unified_msg_origin."""
+def test_default_filter_scopes_key_by_sender():
+    """DefaultSessionFilter derives "{umo}:{sender_id}" per PR #9442."""
     f = _load_session_waiter().DefaultSessionFilter()
-    assert f.filter(FakeEvent(GROUP, ALICE, "")) == GROUP
-    # Same group, same key, regardless of sender.
-    assert f.filter(FakeEvent(GROUP, BOB, "")) == GROUP
+    assert f.filter(FakeEvent(GROUP, ALICE, "")) == f"{GROUP}:{ALICE}"
+    # Same group, different senders, different keys.
+    assert f.filter(FakeEvent(GROUP, BOB, "")) == f"{GROUP}:{BOB}"
+
+
+def test_default_filter_unknown_sender_uses_placeholder():
+    """An empty sender id must not collapse into the plain UMO key."""
+    f = _load_session_waiter().DefaultSessionFilter()
+    assert f.filter(FakeEvent(GROUP, "", "")) == f"{GROUP}:<unknown>"
 
 
 @pytest.mark.asyncio
-async def test_default_manual_umo_registration_still_triggers(waiter_mod):
-    """Regression guard mirroring astrbot_plugin_kimi_datasource_api usage.
+async def test_manual_raw_umo_registration_requires_filter_key(waiter_mod):
+    """Migration guard for PR #9442's sender-scoped default filter.
 
-    That plugin registers a waiter manually with the raw unified_msg_origin as
-    the key while adding a DefaultSessionFilter to FILTERS. Because this fix
-    leaves the default filter untouched, the lookup key still equals the
-    registration key and the waiter must keep triggering. (If the default were
-    changed to include the sender, registration key UMO would never match
-    lookup key UMO+sender and the waiter could never trigger — this test exists
-    to catch exactly that breakage.)
+    Registering a waiter with a raw unified_msg_origin while relying on
+    DefaultSessionFilter no longer triggers: the lookup key is
+    ``"{umo}:{sender_id}"``.  Registering with the filter-derived key keeps
+    working.  (PR #9378's old guard asserted the opposite contract; PR #9442
+    intentionally changed it and documents the migration in the filter
+    docstring.)
     """
     mod = waiter_mod
     triggered = []
 
-    waiter = mod.SessionWaiter(mod.DefaultSessionFilter(), GROUP, False)
+    waiter = mod.SessionWaiter(mod.DefaultSessionFilter(), f"{GROUP}:{BOB}", False)
 
     async def handler(controller, event):
         triggered.append(event.get_sender_id())
@@ -186,7 +192,7 @@ async def test_default_manual_umo_registration_still_triggers(waiter_mod):
 
     waiter.handler = handler
     mod.FILTERS.append(waiter.session_filter)
-    mod.USER_SESSIONS[GROUP] = waiter  # registration key = raw UMO
+    mod.USER_SESSIONS[f"{GROUP}:{BOB}"] = waiter  # registration key = filter key
 
     incoming = FakeEvent(GROUP, BOB, "login code")
     for f in list(mod.FILTERS):
@@ -194,7 +200,7 @@ async def test_default_manual_umo_registration_still_triggers(waiter_mod):
         if sid in mod.USER_SESSIONS:
             await mod.SessionWaiter.trigger(sid, incoming)
 
-    assert triggered == [BOB], "manually UMO-registered waiter must still trigger"
+    assert triggered == [BOB], "filter-key registration must still trigger"
 
 
 # --- New behavior correct (per-sender isolation) ---

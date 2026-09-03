@@ -97,7 +97,9 @@ async def test_gemini_conversation_converts_injected_tool_calls_pair():
         provider_settings={},
     )
     try:
-        contents = provider._prepare_conversation({"messages": INJECTED_PAIR_CONTEXT})
+        contents = await provider._prepare_conversation(
+            {"messages": INJECTED_PAIR_CONTEXT}
+        )
     finally:
         await provider.terminate()
 
@@ -118,9 +120,12 @@ async def test_gemini_conversation_converts_injected_tool_calls_pair():
         for part in content.parts
         if part.function_response is not None
     )
-    assert function_response_part.function_response.name == "fake_1"
+    # PR #9761: functionResponse.name must pair with the functionCall name;
+    # the original tool_call_id is preserved on the id field instead.
+    assert function_response_part.function_response.name == "recall"
+    assert function_response_part.function_response.id == "fake_1"
     assert function_response_part.function_response.response == {
-        "name": "fake_1",
+        "name": "recall",
         "content": "memory json",
     }
 

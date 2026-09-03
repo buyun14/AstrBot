@@ -7,7 +7,6 @@ import { fetchWithAuth } from "@/api/http";
 import { useModuleI18n } from "@/i18n/composables";
 import { usePluginI18n } from "@/utils/pluginI18n";
 import { useCustomizerStore } from "@/stores/customizer";
-import { pluginSidebarState } from "@/composables/usePluginSidebarItems";
 
 const BRIDGE_CHANNEL = "astrbot-plugin-page";
 
@@ -579,19 +578,11 @@ const loadPluginPage = async () => {
     const pluginData = detailResponse.data?.data || null;
     if (!pluginData) {
       errorMessage.value = tm("messages.pluginNotFound");
-      // Heal the stale plugin entry in the shared sidebar state.
-      pluginSidebarState.plugins = pluginSidebarState.plugins.filter(
-        (p) => p.name !== requestedPluginName,
-      );
       return;
     }
 
     if (!pluginData.activated) {
       errorMessage.value = tm("messages.pluginDisabled");
-      // Heal the stale plugin entry in the shared sidebar state.
-      pluginSidebarState.plugins = pluginSidebarState.plugins.map((p) =>
-        p.name === requestedPluginName ? { ...p, activated: false } : p,
-      );
       return;
     }
 
