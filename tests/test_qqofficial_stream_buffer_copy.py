@@ -11,13 +11,13 @@ reused/mutated that object. Fix: _append_stream_delta copies Plain text.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import botpy.message
 import pytest
 
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Image, Plain
 from astrbot.api.platform import (
     AstrBotMessage,
     MessageMember,
@@ -408,3 +408,111 @@ async def test_c2c_stream_closes_when_tail_is_empty_plain() -> None:
     # 中间分片带走全文，空 Plain 尾也照样补 state=10 最小收尾帧
     assert frames[0] == (1, "不稀")
     assert frames[-1] == (10, "\n")
+
+# --- Tail flush regression tests (PR #9875) ---
+
+
+def _capture_post_send(event, return_id: bool):
+    """Patch event._post_send to record each flushed buffer and its stream payload.
+
+    Returns:
+        (sent, restore) where sent is a list of (chain, stream) tuples in send
+        order and restore is the unittest.mock.patch context manager.
+    """
+    sent: list[tuple[MessageChain, dict | None]] = []
+
+    async def fake_post_send(stream=None):
+        sent.append((event.send_buffer, stream))
+        event.send_buffer = None
+        if stream is not None and return_id:
+            return {"id": f"stream-{len(sent)}"}
+        # dict without id / plain None both extract to "no streaming id".
+        return {"id": None} if stream is not None else None
+
+    return sent, patch.object(event, "_post_send", side_effect=fake_post_send)
+
+
+@pytest.mark.asyncio
+async def test_c2c_stream_without_id_resends_only_undelivered_tail() -> None:
+    """No stream id means throttled slices already delivered the prefix.
+
+    The finish path must flush the remaining buffer (tail only), never the
+    already-delivered full text again.
+    """
+    event = _make_c2c_event()
+    sent, post_send_patch = _capture_post_send(event, return_id=False)
+
+    async def gen():
+        yield MessageChain(chain=[Plain("abc")])
+        yield MessageChain(chain=[Plain("def")])
+
+    with (
+        post_send_patch,
+        patch("asyncio.get_running_loop") as mock_loop,
+    ):
+        # First delta at t=2.0 flushes (idle > 1s); second at t=2.5 does not.
+        mock_loop.return_value.time.side_effect = [2.0, 2.5]
+        await event.send_streaming(gen())
+
+    assert [
+        "".join(c.text for c in chain.chain if isinstance(c, Plain))
+        for chain, _ in sent
+    ] == [
+        "abc",
+        "def",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_c2c_stream_close_frame_sends_buffer_media_separately() -> None:
+    """Rich media accumulated for the tail must not be dropped by the close frame."""
+    event = _make_c2c_event()
+    sent, post_send_patch = _capture_post_send(event, return_id=True)
+
+    image = Image(file="tail.png")
+
+    async def gen():
+        yield MessageChain(chain=[Plain("abc")])
+        yield MessageChain(chain=[Plain("def"), image])
+
+    with (
+        post_send_patch,
+        patch("asyncio.get_running_loop") as mock_loop,
+    ):
+        mock_loop.return_value.time.side_effect = [2.0, 2.5]
+        await event.send_streaming(gen())
+
+    assert len(sent) == 3
+    tail_chain, tail_stream = sent[1]
+    assert tail_stream is not None and tail_stream["state"] == 10
+    assert "".join(c.text for c in tail_chain.chain if isinstance(c, Plain)) == "def"
+    media_chain, media_stream = sent[2]
+    assert media_stream is None
+    assert any(isinstance(c, Image) for c in media_chain.chain)
+
+
+@pytest.mark.asyncio
+async def test_c2c_stream_error_without_id_flushes_tail_not_full_text() -> None:
+    """The error fallback shares the tail-flush logic: no duplicate full text."""
+    event = _make_c2c_event()
+    sent, post_send_patch = _capture_post_send(event, return_id=False)
+
+    async def gen():
+        yield MessageChain(chain=[Plain("abc")])
+        yield MessageChain(chain=[Plain("def")])
+        raise RuntimeError("stream blew up")
+
+    with (
+        post_send_patch,
+        patch("asyncio.get_running_loop") as mock_loop,
+    ):
+        mock_loop.return_value.time.side_effect = [2.0, 2.5]
+        await event.send_streaming(gen())
+
+    assert [
+        "".join(c.text for c in chain.chain if isinstance(c, Plain))
+        for chain, _ in sent
+    ] == [
+        "abc",
+        "def",
+    ]

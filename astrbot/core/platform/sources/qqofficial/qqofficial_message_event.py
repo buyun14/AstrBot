@@ -273,6 +273,44 @@ class QQOfficialMessageEvent(AstrMessageEvent):
         def _plain_of(chain: MessageChain) -> str:
             return "".join(c.text for c in chain.chain if isinstance(c, Plain))
 
+        async def _flush_undelivered() -> None:
+            """Close the stream frame and deliver anything not yet sent.
+
+            The accumulated buffer holds exactly the components not delivered
+            by the throttled slices (its Plain text equals
+            ``full_text[sent_len:]``). The state=10 close frame is text-only,
+            so rich media riding in the buffer goes out as a separate normal
+            message instead of being dropped.
+            """
+            nonlocal ret
+            tail = full_text[sent_len:] if full_text else ""
+            pending = self.send_buffer
+            if stream_payload.get("id") is None:
+                # No streaming message was ever created: throttled slices already
+                # delivered the prefix, so flush only the remaining buffer (tail
+                # text plus any media) — never resend the delivered full text.
+                if pending:
+                    ret = await self._post_send()
+                return
+
+            # The state=10 close frame is text-only: media riding in the buffer
+            # would make _post_send_one drop the stream payload and swallow the
+            # close frame, so it is sent separately afterwards.
+            self.send_buffer = MessageChain(use_t2i_=False, type="segment")
+            self.send_buffer.chain.append(Plain(text=tail if tail else "\n"))
+            ret = await self._close_stream_segment(stream_payload)
+            if pending and any(not isinstance(c, Plain) for c in pending.chain):
+                media_chain = MessageChain(
+                    use_t2i_=pending.use_t2i_,
+                    use_markdown_=pending.use_markdown_,
+                    type=pending.type,
+                )
+                media_chain.chain.extend(
+                    c for c in pending.chain if not isinstance(c, Plain)
+                )
+                self.send_buffer = media_chain
+                await self._post_send()
+
         try:
             async for chain in generator:
                 source = self.message_obj.raw_message
@@ -329,15 +367,24 @@ class QQOfficialMessageEvent(AstrMessageEvent):
 
             if isinstance(source, botpy.message.C2CMessage):
                 # 结束流式对话：以 state=10 收尾并把尚未下发的尾段补齐。
-                # 空尾也必须补收尾帧，否则 QQ 侧会把整段回滚到首包（#10066）。
-                ret = await self._close_stream_segment(stream_payload)
+                ret = await _flush_undelivered()
             else:
                 ret = await self._post_send()
 
         except Exception as e:
             logger.error(f"发送流式消息时出错: {e}", exc_info=True)
-            # 避免累计内容在异常后被整包重复发送：仅清理缓存，不做非流式整包兜底
-            # 如需兜底，应该只发送未发送 delta（后续可继续优化）
+            # 断流兜底：把已生成但未下发的尾段以 state=10 补齐到同一条流式消息，
+            # 保证用户看到完整回答，而不是冻结在最后一个分片。只补未下发的 delta，
+            # 绝不整包重发（上游曾因整包重发而改为不做兜底）。
+            try:
+                if isinstance(source, botpy.message.C2CMessage):
+                    # 断流兜底与正常收尾共用同一套补发逻辑，避免两处行为漂移。
+                    await _flush_undelivered()
+                elif self.send_buffer:
+                    # 非 C2C：中间从未分片发送，整体补发剩余 buffer。
+                    await self._post_send()
+            except Exception as e2:
+                logger.error(f"断流兜底补发也失败: {e2}", exc_info=True)
             self.send_buffer = None
 
         return None

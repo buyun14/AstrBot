@@ -264,19 +264,62 @@ async def test_request_queue_is_bounded_and_close_cancels_owned_tasks():
 
 
 @pytest.mark.asyncio
-async def test_request_queue_timeout_is_reported_as_overload(monkeypatch):
-    """Map asyncio queue timeouts to the documented overload error."""
-    http = QQOfficialHttp(timeout=20)
-
-    async def raise_timeout(awaitable, *_args, **_kwargs):
-        awaitable.close()
-        raise asyncio.TimeoutError
-
-    monkeypatch.setattr(qqofficial_http.asyncio, "wait_for", raise_timeout)
+async def test_request_queue_timeout_is_reported_as_overload():
+    """Map queue wait timeouts to the documented overload error without leaking slots."""
+    http = QQOfficialHttp(
+        timeout=20,
+        max_concurrent_requests=1,
+        queue_timeout=0.05,
+    )
+    # Saturate the only slot so the queue wait times out.
+    await http._request_slots.acquire()
 
     with pytest.raises(QQOfficialHttpOverloadedError, match="timed out"):
         async with http.request_slot():
             pass
+
+    # The timed-out waiter must not have consumed a slot.
+    http._request_slots.release()
+    async with http.request_slot():
+        pass
+
+    await http.close()
+
+
+class _RacyCompletedSemaphore:
+    """Semaphore double whose acquire completes despite being cancelled.
+
+    Mimics the Python <= 3.11 wait_for race: the cancelled waiter already
+    consumed a slot, so acquire() returns normally even though cancel() was
+    delivered to it.
+    """
+
+    def __init__(self) -> None:
+        self.release_count = 0
+
+    async def acquire(self) -> bool:
+        try:
+            await asyncio.Event().wait()  # never set; cancelled instead
+        except asyncio.CancelledError:
+            pass  # slot was consumed before the cancellation landed
+        return True
+
+    def release(self) -> None:
+        self.release_count += 1
+
+
+@pytest.mark.asyncio
+async def test_request_slot_timeout_gives_back_racy_completed_slot():
+    """A slot consumed around the timeout must be released, not leaked."""
+    http = QQOfficialHttp(timeout=20, queue_timeout=0.05)
+    racy = _RacyCompletedSemaphore()
+    http._request_slots = racy  # type: ignore[assignment]
+
+    with pytest.raises(QQOfficialHttpOverloadedError, match="timed out"):
+        async with http.request_slot():
+            pass
+
+    assert racy.release_count == 1
 
     await http.close()
 

@@ -178,16 +178,35 @@ class QQOfficialHttp(BotHttp):
                 self._pending_requests += 1
                 counted = True
 
+            # asyncio.wait_for is racy here on Python <= 3.11: an acquire that
+            # completes concurrently with the timeout is dropped with the
+            # cancelled waiter, permanently leaking one bounded slot. Drive
+            # the acquire as a task and settle it explicitly instead.
+            acquire_task = asyncio.get_running_loop().create_task(
+                self._request_slots.acquire()
+            )
             try:
-                await asyncio.wait_for(
-                    self._request_slots.acquire(),
-                    timeout=self._queue_timeout,
+                done, _ = await asyncio.wait(
+                    {acquire_task}, timeout=self._queue_timeout
                 )
-                acquired = True
-            except asyncio.TimeoutError as exc:
-                raise QQOfficialHttpOverloadedError(
-                    "QQ Official outbound request queue timed out"
-                ) from exc
+                if not done:
+                    raise QQOfficialHttpOverloadedError(
+                        "QQ Official outbound request queue timed out"
+                    )
+            except BaseException:
+                # Stop a still-pending acquire; if it completed around the
+                # timeout/cancellation, hand the consumed slot back so the
+                # bounded pool does not shrink.
+                acquire_task.cancel()
+                try:
+                    await acquire_task
+                except asyncio.CancelledError:
+                    pass
+                else:
+                    self._request_slots.release()
+                raise
+
+            acquired = True
 
             self._ensure_open()
             yield
