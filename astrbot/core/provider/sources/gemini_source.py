@@ -339,6 +339,10 @@ class ProviderGoogleGenAI(Provider):
             else:
                 contents.append(content_cls(parts=part))
 
+        model_name = str(
+            payloads.get("model", getattr(self, "model_name", "")),
+        ).lower()
+        is_gemini3_model = model_name.rsplit("/", 1)[-1].startswith("gemini-3")
         gemini_contents: list[types.Content] = []
         # Tool result messages only carry tool_call_id, not the function name.
         # Index first so functionResponse.name still matches even if a tool
@@ -372,6 +376,14 @@ class ProviderGoogleGenAI(Provider):
 
             elif role == "assistant":
                 parts = []
+                tool_calls = message.get("tool_calls") or []
+                tool_calls_have_thought_signature = any(
+                    isinstance(tool, dict)
+                    and isinstance(tool.get("extra_content"), dict)
+                    and isinstance(tool["extra_content"].get("google"), dict)
+                    and tool["extra_content"]["google"].get("thought_signature")
+                    for tool in tool_calls
+                )
                 if isinstance(content, str):
                     if content:
                         parts.append(types.Part.from_text(text=content))
@@ -396,16 +408,18 @@ class ProviderGoogleGenAI(Provider):
                             thinking_signature = None
 
                     if (
+                        is_gemini3_model
+                        and tool_calls
+                        and not tool_calls_have_thought_signature
+                    ):
+                        # An unsigned tool step came from another provider, so
+                        # its opaque reasoning signature is not valid for Gemini.
+                        thinking_signature = None
+
+                    if (
                         not text
                         and thinking_signature
-                        and "tool_calls" in message
-                        and any(
-                            isinstance(tool, dict)
-                            and isinstance(tool.get("extra_content"), dict)
-                            and isinstance(tool["extra_content"].get("google"), dict)
-                            and tool["extra_content"]["google"].get("thought_signature")
-                            for tool in message["tool_calls"]
-                        )
+                        and tool_calls_have_thought_signature
                     ):
                         # If the main content is empty but tool calls have thought signatures,
                         # skip adding an empty text part to deduplicate the thinking signature in the main content and tool calls.
@@ -418,8 +432,8 @@ class ProviderGoogleGenAI(Provider):
                             )
                         )
 
-                if "tool_calls" in message:
-                    for tool in message["tool_calls"]:
+                if tool_calls:
+                    for index, tool in enumerate(tool_calls):
                         func_name = tool["function"]["name"]
                         tool_id = tool.get("id")
                         part = types.Part.from_function_call(
@@ -437,14 +451,24 @@ class ProviderGoogleGenAI(Provider):
                         # we should set thought_signature back to part if exists
                         # for more info about thought_signature, see:
                         # https://ai.google.dev/gemini-api/docs/thought-signatures
+                        ts_bs64 = None
                         if "extra_content" in tool and tool["extra_content"]:
                             ts_bs64 = (
                                 tool["extra_content"]
                                 .get("google", {})
                                 .get("thought_signature")
                             )
-                            if ts_bs64:
-                                part.thought_signature = base64.b64decode(ts_bs64)
+                        if ts_bs64:
+                            part.thought_signature = base64.b64decode(ts_bs64)
+                        elif (
+                            is_gemini3_model
+                            and not tool_calls_have_thought_signature
+                            and index == 0
+                        ):
+                            # Cross-provider histories do not carry Gemini's opaque
+                            # signature. Gemini 3 accepts this documented sentinel
+                            # on the first function call in the step.
+                            part.thought_signature = b"skip_thought_signature_validator"
                         parts.append(part)
 
                 if not parts:
