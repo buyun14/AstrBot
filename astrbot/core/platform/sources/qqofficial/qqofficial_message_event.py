@@ -250,6 +250,13 @@ class QQOfficialMessageEvent(AstrMessageEvent):
         source = (
             self.message_obj.raw_message
         )  # 提前获取，避免 generator 为空时 NameError
+        # 累积已生成全文与已下发长度，用于断流兜底，避免回复被掐断
+        full_text = ""
+        sent_len = 0
+
+        def _plain_of(chain: MessageChain) -> str:
+            return "".join(c.text for c in chain.chain if isinstance(c, Plain))
+
         try:
             async for chain in generator:
                 source = self.message_obj.raw_message
@@ -278,10 +285,15 @@ class QQOfficialMessageEvent(AstrMessageEvent):
                         "reset": False,
                     }
                     last_edit_time = 0
+                    # 工具段结束后已下发前缀不再延续，重置全文追踪
+                    full_text = ""
+                    sent_len = 0
                     continue
 
                 # 累积内容（拷贝，避免上游复用 MessageChain 改写 buffer）
                 self._append_stream_delta(chain)
+                # 追踪已生成全文（用于断流兜底）
+                full_text += _plain_of(chain)
 
                 # 节流：按时间间隔发送中间分片
                 current_time = asyncio.get_running_loop().time()
@@ -295,10 +307,13 @@ class QQOfficialMessageEvent(AstrMessageEvent):
                     if ret_id is not None:
                         stream_payload["id"] = ret_id
                     last_edit_time = asyncio.get_running_loop().time()
+                    # 记录已下发长度（buffer 已清空）
+                    sent_len = len(full_text)
                     self.send_buffer = None  # 清空已发送的分片，避免下次重复发送旧内容
 
             if isinstance(source, botpy.message.C2CMessage):
-                # 结束流式对话，发送 buffer 中剩余内容（空尾也要补收尾帧）
+                # 结束流式对话：以 state=10 收尾并把尚未下发的尾段补齐。
+                # 空尾也必须补收尾帧，否则 QQ 侧会把整段回滚到首包（#10066）。
                 ret = await self._close_stream_segment(stream_payload)
             else:
                 ret = await self._post_send()
