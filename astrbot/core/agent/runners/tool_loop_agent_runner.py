@@ -1538,6 +1538,13 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     result_parts.append(
                                         "The tool has returned a data type that is not supported."
                                     )
+                            else:
+                                logger.warning(
+                                    f"Unsupported tool result content type: {type(content_item).__name__}"
+                                )
+                                result_parts.append(
+                                    "The tool has returned a data type that is not supported."
+                                )
                         if result_parts:
                             tool_result_parts.append("\n\n".join(result_parts))
 
