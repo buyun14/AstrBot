@@ -79,7 +79,11 @@ def test_spreadsheet_skill_keeps_a_line_break_inside_a_quoted_cell(
 ) -> None:
     """A cell may span lines, and the break is part of the value."""
     source = tmp_path / "notes.csv"
-    source.write_text('ID,Note\n1,"line one\nline two"\n2,plain\n', encoding="utf-8")
+    # newline="" writes the authored bytes verbatim; the default translation
+    # would turn the in-cell break into \r\n on Windows and change the value.
+    source.write_text(
+        'ID,Note\n1,"line one\nline two"\n2,plain\n', encoding="utf-8", newline=""
+    )
     output = tmp_path / "notes.xlsx"
 
     inspected = _run_script(SPREADSHEET_SCRIPTS / "inspect_workbook.py", source)

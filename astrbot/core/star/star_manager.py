@@ -18,7 +18,6 @@ from enum import Enum, auto
 from pathlib import Path
 from types import ModuleType
 
-import yaml
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
