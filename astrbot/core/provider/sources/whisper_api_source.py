@@ -35,6 +35,12 @@ class ProviderOpenAIWhisperAPI(STTProvider):
             "OpenAI Whisper", proxy, httpx_module=httpx_module
         )
 
+        # Optional transcription hints. Empty values fall back to NOT_GIVEN so
+        # that Whisper keeps auto-detecting the language, matching the previous
+        # behavior for users who do not configure these fields.
+        self.language = str(provider_config.get("language") or "").strip()
+        self.prompt = str(provider_config.get("prompt") or "").strip()
+
         self.client = AsyncOpenAI(
             default_headers=self.request_headers,
             api_key=self.chosen_api_key,
@@ -56,6 +62,8 @@ class ProviderOpenAIWhisperAPI(STTProvider):
                 result = await self.client.audio.transcriptions.create(
                     model=self.model_name,
                     file=("audio.wav", audio_file),
+                    language=self.language or NOT_GIVEN,
+                    prompt=self.prompt or NOT_GIVEN,
                 )
         return result.text
 
