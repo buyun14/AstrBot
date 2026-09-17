@@ -400,9 +400,7 @@ class ProviderOpenAIOfficial(Provider):
         # differently (e.g. reasoning_content for DeepSeek/Moonshot,
         # reasoning for OpenRouter-style relays), so allow overriding it
         # via the provider config. See issue #9783.
-        self.reasoning_key = (
-            provider_config.get("reasoning_key") or "reasoning_content"
-        )
+        self.reasoning_key = provider_config.get("reasoning_key") or "reasoning_content"
 
     def _ollama_disable_thinking_enabled(self) -> bool:
         value = self.provider_config.get("ollama_disable_thinking", False)
@@ -486,9 +484,7 @@ class ProviderOpenAIOfficial(Provider):
             tool_calls = msg.get("tool_calls")
             # Follow the configured reasoning key (#9783); fall back to the
             # default key so history saved by older versions is not dropped.
-            reasoning_content = msg.get(reasoning_key) or msg.get(
-                "reasoning_content"
-            )
+            reasoning_content = msg.get(reasoning_key) or msg.get("reasoning_content")
 
             if _is_empty(content) and not tool_calls:
                 if not reasoning_content:

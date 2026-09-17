@@ -1,19 +1,19 @@
 """Author: diudiu62
 Date: 2025-02-24 18:04:18
-LastEditTime: 2026-08-31 
+LastEditTime: 2026-08-31
 LastEdit / Blame: xiewoc
 """
 
 import asyncio
-import re
 import os
+import re
 import shutil
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from astrbot.core.utils.pip_installer import PipInstaller
-from astrbot.core.utils.media_utils import MediaResolver
-from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from astrbot.core import logger
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+from astrbot.core.utils.media_utils import MediaResolver
+from astrbot.core.utils.pip_installer import PipInstaller
 
 from ..entities import ProviderType
 from ..provider import STTProvider
@@ -24,8 +24,12 @@ if TYPE_CHECKING:
     from funasr_onnx import SenseVoiceSmall
 
 _REQUIRED_MODULES = [
-    "funasr", "funasr_onnx", "torch",  # "torchaudio", <- we don't need this, use FFmpeg instead
-    "onnxruntime", "modelscope", "onnxscript"
+    "funasr",
+    "funasr_onnx",
+    "torch",  # "torchaudio", <- we don't need this, use FFmpeg instead
+    "onnxruntime",
+    "modelscope",
+    "onnxscript",
 ]
 
 # 模块级缓存，避免重复安装/导入
@@ -65,9 +69,9 @@ def _load_sense_voice_modules():
         return _sense_voice_cls, _postprocess_fn, _snapshot_download_fn
 
     try:
-        from modelscope import snapshot_download
         from funasr_onnx import SenseVoiceSmall
         from funasr_onnx.utils.postprocess_utils import rich_transcription_postprocess
+        from modelscope import snapshot_download
 
         _sense_voice_cls = SenseVoiceSmall
         _postprocess_fn = rich_transcription_postprocess
@@ -81,18 +85,21 @@ def _load_sense_voice_modules():
             # 此处保留原逻辑但增加提示，实际部署建议改为插件初始化钩子
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                logger.warning("检测到运行中的事件循环，自动安装可能失败。建议手动安装依赖。")
+                logger.warning(
+                    "检测到运行中的事件循环，自动安装可能失败。建议手动安装依赖。"
+                )
             asyncio.run(_install_dependencies())
         except Exception as e:
             logger.error(f"自动安装依赖失败: {e}")
             raise ImportError(
-                "SenseVoice 依赖安装失败，请手动执行: pip install " + " ".join(_REQUIRED_MODULES)
+                "SenseVoice 依赖安装失败，请手动执行: pip install "
+                + " ".join(_REQUIRED_MODULES)
             ) from e
 
         # 重试导入
-        from modelscope import snapshot_download
         from funasr_onnx import SenseVoiceSmall
         from funasr_onnx.utils.postprocess_utils import rich_transcription_postprocess
+        from modelscope import snapshot_download
 
         _sense_voice_cls = SenseVoiceSmall
         _postprocess_fn = rich_transcription_postprocess
@@ -110,7 +117,7 @@ class ProviderSenseVoiceSTTSelfHost(STTProvider):
         super().__init__(provider_config, provider_settings)
         self.set_model(provider_config["stt_model"])
 
-        self.model: Optional["SenseVoiceSmall"] = None
+        self.model: SenseVoiceSmall | None = None
         self.is_emotion: bool = provider_config.get("is_emotion", False)
         self.model_path: str = os.path.join(get_astrbot_data_path(), "SenseVoiceSmall")
 
@@ -127,13 +134,17 @@ class ProviderSenseVoiceSTTSelfHost(STTProvider):
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
-                lambda: snapshot_download("iic/SenseVoiceSmall", local_dir=self.model_path),
+                lambda: snapshot_download(
+                    "iic/SenseVoiceSmall", local_dir=self.model_path
+                ),
             )
 
         # 模型加载（CPU/GPU 密集型操作放入线程池）
         self.model = await asyncio.get_running_loop().run_in_executor(
             None,
-            lambda: SenseVoiceSmall(model_dir=self.model_path, quantize=True, batch_size=16),
+            lambda: SenseVoiceSmall(
+                model_dir=self.model_path, quantize=True, batch_size=16
+            ),
         )
         logger.info("SenseVoice 模型加载完成。")
 
