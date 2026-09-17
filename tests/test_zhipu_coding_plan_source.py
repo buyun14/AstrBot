@@ -241,8 +241,10 @@ async def test_non_stream_request_uses_reasoning_policy_without_openclaw_identit
     assert response.completion_text == "ok"
     assert captured["stream"] is False
     assert captured["extra_body"] == {"reasoning_effort": "high"}
-    assert provider.custom_headers == {"X-Test-Header": "test-value"}
-    assert "User-Agent" not in provider.custom_headers
+    # Upstream standardizes a versioned User-Agent on every provider (#10082);
+    # the configured custom header must still survive alongside it.
+    assert provider.custom_headers["X-Test-Header"] == "test-value"
+    assert provider.custom_headers["User-Agent"].startswith("astrbot/")
 
 
 @pytest.mark.asyncio
