@@ -23,7 +23,12 @@ class SessionPluginManager:
             会话禁用的插件名称集合，可能为空集合。
         """
         set_extra = getattr(event, "set_extra", None)
-        cached = event.get_extra(_SESSION_DISABLED_PLUGINS_EXTRA_KEY)
+        get_extra = getattr(event, "get_extra", None)
+        cached = (
+            get_extra(_SESSION_DISABLED_PLUGINS_EXTRA_KEY)
+            if get_extra is not None
+            else None
+        )
         if cached is not None:
             return cached
 
