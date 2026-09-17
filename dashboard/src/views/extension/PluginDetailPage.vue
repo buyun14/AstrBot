@@ -13,6 +13,7 @@ import MarkdownIt from "markdown-it";
 import defaultPluginIcon from "/favicon.svg";
 import { pluginApi } from "@/api/v1";
 import { useI18n, useModuleI18n } from "@/i18n/composables";
+import { resolveRelativeUrls } from "@/utils/markdownUrls.mjs";
 import { usePluginI18n } from "@/utils/pluginI18n";
 import ConsoleDisplayer from "@/components/shared/ConsoleDisplayer.vue";
 import PluginPlatformChip from "@/components/shared/PluginPlatformChip.vue";
@@ -587,7 +588,7 @@ const goBack = () => {
   });
 };
 
-const renderMarkdown = (source) => {
+const renderMarkdown = (source, { docUrl = "" } = {}) => {
   const normalizedSource = String(source || "")
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'");
@@ -595,6 +596,8 @@ const renderMarkdown = (source) => {
   const cleanHtml = DOMPurify.sanitize(rawHtml, MARKDOWN_SANITIZE_OPTIONS);
   const container = document.createElement("div");
   container.innerHTML = cleanHtml;
+
+  resolveRelativeUrls(container, { docUrl, repoUrl: repoUrl.value });
 
   container.querySelectorAll("a").forEach((link) => {
     const href = link.getAttribute("href") || "";
@@ -677,7 +680,7 @@ const fetchReadme = async () => {
         readmeEmpty.value = true;
         return;
       }
-      renderedReadme.value = renderMarkdown(content);
+      renderedReadme.value = renderMarkdown(content, { docUrl: readmeUrl });
     } catch (err) {
       readmeError.value = err?.message || String(err);
     } finally {
@@ -748,7 +751,7 @@ const fetchChangelog = async () => {
         changelogEmpty.value = true;
         return;
       }
-      renderedChangelog.value = renderMarkdown(content);
+      renderedChangelog.value = renderMarkdown(content, { docUrl: changelogUrl });
     } catch (err) {
       changelogError.value = err?.message || String(err);
     } finally {
