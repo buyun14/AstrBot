@@ -2915,8 +2915,10 @@ async def test_skills_like_requery_reply_reaches_stream_bridge_once(
         for response_type in expected_types
         for chain_type in ("reasoning", None)
     ]
-    # Preserve existing llm_result ordering; only new deltas follow the hooks.
-    assert hooks_at_emission == [False, False] + ([True, True] if streaming else [])
+    # Response hooks finalize the fallback before it is emitted (PR #9789), so
+    # every bridged event carries post-hook text. The relative ordering of
+    # llm_result and streaming_delta is still pinned by final_events above.
+    assert hooks_at_emission == [True] * len(final_events)
     assert runner.done()
     assert runner.get_final_llm_resp().completion_text == final_text
     assert runner.run_context.messages[-1].content[-1].text == final_text
